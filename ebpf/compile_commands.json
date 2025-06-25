@@ -1,0 +1,94 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/clang",
+      "-target",
+      "bpf",
+      "-mcpu=v3",
+      "-D__TARGET_ARCH_x86_64",
+      "-Iinclude",
+      "-O2",
+      "-g",
+      "-c",
+      "-I",
+      "/home/kwzhao/boost-1.87-python312/include",
+      "-I",
+      ".",
+      "-o",
+      "build/tcp_counter.bpf.o",
+      "src/tcp_counter.bpf.c"
+    ],
+    "directory": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf",
+    "file": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/src/tcp_counter.bpf.c",
+    "output": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/build/tcp_counter.bpf.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/clang",
+      "-target",
+      "bpf",
+      "-mcpu=v3",
+      "-D__TARGET_ARCH_x86_64",
+      "-Iinclude",
+      "-O2",
+      "-g",
+      "-c",
+      "-I",
+      "/home/kwzhao/boost-1.87-python312/include",
+      "-I",
+      ".",
+      "-o",
+      "build/tcp_monitor.bpf.o",
+      "src/tcp_monitor.bpf.c"
+    ],
+    "directory": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf",
+    "file": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/src/tcp_monitor.bpf.c",
+    "output": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/build/tcp_monitor.bpf.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/cc",
+      "-c",
+      "-g",
+      "-O2",
+      "-Wall",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ibuild",
+      "-Wl,-rpath=/usr/local/lib",
+      "-I",
+      "/home/kwzhao/boost-1.87-python312/include",
+      "-I",
+      ".",
+      "-o",
+      "build/tcp_counter",
+      "loader/tcp_counter.c"
+    ],
+    "directory": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf",
+    "file": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/loader/tcp_counter.c",
+    "output": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/build/tcp_counter"
+  },
+  {
+    "arguments": [
+      "/usr/bin/cc",
+      "-c",
+      "-g",
+      "-O2",
+      "-Wall",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ibuild",
+      "-Wl,-rpath=/usr/local/lib",
+      "-I",
+      "/home/kwzhao/boost-1.87-python312/include",
+      "-I",
+      ".",
+      "-o",
+      "build/tcp_monitor",
+      "loader/tcp_monitor.c"
+    ],
+    "directory": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf",
+    "file": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/loader/tcp_monitor.c",
+    "output": "/home/kwzhao/Desktop/research/polyphony-project/workfeed/ebpf/build/tcp_monitor"
+  }
+]
