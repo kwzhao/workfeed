@@ -48,12 +48,13 @@ ebpf/
 ├── README.md            # This file
 ├── src/                 # eBPF programs (kernel space)
 │   ├── tcp_counter.bpf.c # TCP connection counter
-│   └── tcp_monitor.bpf.c # Full flow monitor (TODO)
+│   └── tcp_monitor.bpf.c # Full flow monitor with lifecycle tracking
 ├── loader/              # User-space loaders
-│   ├── tcp_counter.c
-│   └── tcp_monitor.c    # TODO
+│   ├── tcp_counter.c    # Counter display program
+│   └── tcp_monitor.c    # Flow monitor with ring buffer
 ├── include/             # Headers
-│   └── vmlinux_dev.h    # BTF header for kernel types
+│   ├── vmlinux_dev.h    # BTF header for kernel types
+│   └── tcp_monitor.h    # Shared definitions for monitor
 └── build/               # Build artifacts (generated)
 ```
 
@@ -67,6 +68,7 @@ make
 
 # Build specific programs
 make build/tcp_counter
+make build/tcp_monitor
 
 # Clean build artifacts
 make clean
@@ -123,6 +125,30 @@ nc localhost 22
 
 # Counter should increment with each new connection
 ```
+
+### TCP Flow Monitor
+
+Tracks complete TCP socket lifecycle with flow metadata:
+
+```bash
+# Build and run
+make build/tcp_monitor
+sudo ./build/tcp_monitor --verbose
+
+# Run integration tests
+sudo ./test_tcp_monitor.sh
+
+# Monitor captures:
+# - Connection 5-tuple (src/dst IP:port)
+# - DSCP values for QoS tracking
+# - Bytes sent/received (placeholder - needs byte counting tracepoints)
+# - Connection duration
+```
+
+The monitor uses:
+- **BPF_MAP_TYPE_HASH**: Track active flows by socket pointer
+- **BPF_MAP_TYPE_RINGBUF**: Efficiently pass completed flows to user space
+- **BPF_MAP_TYPE_PERCPU_ARRAY**: Collect statistics without contention
 
 ## Development Workflow
 
@@ -188,10 +214,17 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c | head -20
 
 ## Next Steps
 
-1. **TASK-002**: Implement full TCP socket lifecycle tracking
-2. **TASK-003**: Add ring buffer for efficient flow record collection
-3. **TASK-004**: Build daemon for continuous monitoring
-4. **TASK-005**: Extract and track DSCP values for QoS analysis
+1. **TASK-002**: ~~Implement full TCP socket lifecycle tracking~~ ✓ Complete
+2. **TASK-003**: Add per-rack sampling layer
+3. **TASK-004**: Build daemon for continuous monitoring  
+4. **TASK-005**: Integrate with Polyphony controller
+
+### Known Limitations
+
+The current tcp_monitor implementation has these limitations that will be addressed:
+- Byte counting tracepoints (tcp_sendmsg/tcp_cleanup_rbuf) need proper argument extraction
+- Flow key lookup strategy needs improvement for socket pointer reuse prevention
+- IPv6 support not yet implemented (IPv4 only for now)
 
 ## References
 

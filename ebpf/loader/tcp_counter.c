@@ -22,8 +22,8 @@ int main(int argc, char **argv)
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    /* Suppress libbpf debug output (only show errors) */
-    libbpf_set_print(NULL);
+    /* Keep default libbpf printing to see errors */
+    /* libbpf_set_print(NULL); */
 
     /* Open BPF skeleton */
     skel = tcp_counter_bpf__open();
