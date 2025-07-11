@@ -74,6 +74,39 @@ The controller queries Workfeed once per epoch (e.g., every 30 seconds) to get t
 
 See timeline in Chapter 5 of the thesis for detailed milestones.
 
+### Implementation Decisions
+
+#### Unified tcp_monitor Binary
+
+Rather than separate binaries for debugging and production, we implement a single `tcp_monitor` executable with multiple modes:
+
+- `tcp_monitor --debug` (or no flags): Current behavior - prints flows to stdout for debugging
+- `tcp_monitor --daemon --rack <addr:port>`: Production mode - batches flows and sends via UDP
+
+This approach:
+- Avoids code duplication for eBPF loading and ring buffer handling
+- Keeps probe updates immediately testable in both modes
+- Simplifies packaging and deployment (single binary)
+- Makes future enhancements (sampling rates, etc.) easy to add
+
+#### Per-Host Collector Architecture
+
+The daemon mode implements batching with:
+- Fixed-size batches (default 128 flows, configurable via `--batch-size`)
+- Timer-based partial flush every 50ms (prevents flow records from getting stuck)
+- Drop-on-error for UDP failures (avoids blocking)
+- Extended statistics for monitoring batch performance
+
+#### Component Separation
+
+The complete pipeline consists of:
+1. **eBPF probe** (kernel space): Captures TCP lifecycle events
+2. **tcp_monitor** (per-host): Collects and batches flow records
+3. **Per-rack sampler** (separate process): Applies size-based sampling
+4. **Controller shim** (at controller): Expands samples into full workload
+
+Each component can be developed and tested independently.
+
 ## Future Extensions
 
 - **Sketch-based summaries**: Use count-min sketches for even lower overhead

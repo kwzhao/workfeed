@@ -14,6 +14,10 @@
 #include <signal.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
+#include <getopt.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -25,8 +29,50 @@
 #define AF_INET 2
 #endif
 
+#define DEFAULT_UDP_HOST "127.0.0.1"
+#define DEFAULT_UDP_PORT 5001
+#define DEFAULT_BATCH_SIZE 128
+#define DEFAULT_FLUSH_MS 200
+#define MAX_BATCH_SIZE 256
+
+/* Operating modes */
+enum op_mode {
+    MODE_NONE = 0,
+    MODE_DEBUG,
+    MODE_DAEMON
+};
+
+/* Configuration for daemon mode */
+struct daemon_config {
+    char udp_host[INET_ADDRSTRLEN];
+    __u16 udp_port;
+    __u32 batch_size;
+    __u32 flush_ms;
+};
+
+/* Batch structure for accumulating flow records */
+struct batch {
+    struct flow_record records[MAX_BATCH_SIZE];
+    __u16 count;
+    __u64 first_timestamp_ns;
+};
+
 static volatile bool running = true;
 static bool verbose = false;
+static enum op_mode mode = MODE_NONE;  /* Require explicit mode selection */
+static struct daemon_config daemon_cfg = {
+    .udp_host = DEFAULT_UDP_HOST,
+    .udp_port = DEFAULT_UDP_PORT,
+    .batch_size = DEFAULT_BATCH_SIZE,
+    .flush_ms = DEFAULT_FLUSH_MS
+};
+static struct batch current_batch = {0};
+static int udp_sock = -1;
+static struct sockaddr_in rack_addr;
+
+/* User-space only statistics */
+static __u64 us_batch_sent = 0;
+static __u64 us_udp_send_fail = 0;
 
 static void sig_handler(int sig)
 {
@@ -38,6 +84,13 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
     if (verbose || level == LIBBPF_WARN || level == LIBBPF_INFO)
         return vfprintf(stderr, format, args);
     return 0;
+}
+
+static __u64 get_monotonic_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
 static void print_flow_record(const struct flow_record *flow)
@@ -60,16 +113,100 @@ static void print_flow_record(const struct flow_record *flow)
            flow->bytes_sent, flow->bytes_recv);
 }
 
+static int init_udp_socket(void)
+{
+    udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_sock < 0) {
+        fprintf(stderr, "Failed to create UDP socket: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    /* Set up destination address */
+    memset(&rack_addr, 0, sizeof(rack_addr));
+    rack_addr.sin_family = AF_INET;
+    rack_addr.sin_port = htons(daemon_cfg.udp_port);
+    if (inet_pton(AF_INET, daemon_cfg.udp_host, &rack_addr.sin_addr) != 1) {
+        fprintf(stderr, "Invalid UDP host address: %s\n", daemon_cfg.udp_host);
+        close(udp_sock);
+        return -1;
+    }
+    
+    /* Set socket buffer to handle bursts */
+    int sndbuf = daemon_cfg.batch_size * sizeof(struct flow_record) + 1024;
+    if (setsockopt(udp_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+        fprintf(stderr, "Warning: failed to set UDP send buffer size\n");
+    }
+    
+    return 0;
+}
+
+static void send_batch(struct tcp_monitor_bpf *skel)
+{
+    if (current_batch.count == 0)
+        return;
+    
+    /* Use static buffer to avoid malloc/free on every batch */
+    static char packet[sizeof(__u16) + MAX_BATCH_SIZE * sizeof(struct flow_record)];
+    
+    /* Pack count in network byte order */
+    *((__u16 *)packet) = htons(current_batch.count);
+    
+    /* Copy flow records */
+    size_t records_size = current_batch.count * sizeof(struct flow_record);
+    memcpy(packet + sizeof(__u16), current_batch.records, records_size);
+    
+    /* Send to rack sampler */
+    size_t packet_size = sizeof(__u16) + records_size;
+    ssize_t sent = sendto(udp_sock, packet, packet_size, 0,
+                          (struct sockaddr *)&rack_addr, sizeof(rack_addr));
+    
+    if (sent < 0) {
+        if (verbose)
+            fprintf(stderr, "Failed to send batch: %s\n", strerror(errno));
+        us_udp_send_fail++;
+    } else {
+        us_batch_sent++;
+        if (verbose)
+            printf("Sent batch with %u flows\n", current_batch.count);
+    }
+    
+    /* Reset batch */
+    current_batch.count = 0;
+    current_batch.first_timestamp_ns = 0;
+}
+
+static void add_to_batch(const struct flow_record *flow, struct tcp_monitor_bpf *skel)
+{
+    /* Record timestamp on first flow */
+    if (current_batch.count == 0) {
+        current_batch.first_timestamp_ns = get_monotonic_ns();
+    }
+    
+    /* Add flow to batch */
+    current_batch.records[current_batch.count++] = *flow;
+    
+    /* Send if batch is full */
+    if (current_batch.count >= daemon_cfg.batch_size) {
+        send_batch(skel);
+    }
+}
+
 static int handle_flow_event(void *ctx, void *data, size_t data_sz)
 {
     const struct flow_record *flow = data;
+    struct tcp_monitor_bpf *skel = ctx;
     
     if (data_sz < sizeof(*flow)) {
         fprintf(stderr, "Invalid flow record size\n");
         return 0;
     }
     
-    print_flow_record(flow);
+    if (mode == MODE_DEBUG) {
+        print_flow_record(flow);
+    } else if (mode == MODE_DAEMON) {
+        add_to_batch(flow, skel);
+    }
+    
     return 0;
 }
 
@@ -103,6 +240,27 @@ static void print_stats(struct tcp_monitor_bpf *skel)
     printf("Invalid sockets:  %llu\n", values[STAT_INVALID_SK]);
     printf("IPv6 skipped:     %llu\n", values[STAT_IPV6_SKIPPED]);
     printf("Failed connects:  %llu\n", values[STAT_FAILED_CONN]);
+    
+    if (mode == MODE_DAEMON) {
+        printf("Batches sent:     %llu\n", us_batch_sent);
+        printf("UDP send fails:   %llu\n", us_udp_send_fail);
+    }
+}
+
+static void print_usage(const char *prog)
+{
+    printf("Usage: %s [OPTIONS]\n", prog);
+    printf("\nOperating Modes (mutually exclusive):\n");
+    printf("  --debug             Print flows to stdout (default if no mode specified)\n");
+    printf("  --daemon            Run as batch collector, send via UDP\n");
+    printf("\nDaemon Mode Options:\n");
+    printf("  --udp-host HOST     Rack sampler IP address (default: %s)\n", DEFAULT_UDP_HOST);
+    printf("  --udp-port PORT     Rack sampler UDP port (default: %d)\n", DEFAULT_UDP_PORT);
+    printf("  --batch-size N      Records per batch (default: %d, max: %d)\n", DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE);
+    printf("  --flush-ms MS       Max time before flush (default: %d)\n", DEFAULT_FLUSH_MS);
+    printf("\nGeneral Options:\n");
+    printf("  -v, --verbose       Enable verbose output\n");
+    printf("  -h, --help          Show this help message\n");
 }
 
 int main(int argc, char **argv)
@@ -113,11 +271,79 @@ int main(int argc, char **argv)
     __u64 ipv6_skipped = 0;
     __u32 ipv6_key = STAT_IPV6_SKIPPED;
     
+    /* Command-line options */
+    static struct option long_opts[] = {
+        {"debug", no_argument, 0, 'd'},
+        {"daemon", no_argument, 0, 'D'},
+        {"udp-host", required_argument, 0, 'H'},
+        {"udp-port", required_argument, 0, 'P'},
+        {"batch-size", required_argument, 0, 'B'},
+        {"flush-ms", required_argument, 0, 'F'},
+        {"verbose", no_argument, 0, 'v'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+    
     /* Parse arguments */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
+    int opt;
+    while ((opt = getopt_long(argc, argv, "vhd", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'd':
+            if (mode != MODE_NONE) {
+                fprintf(stderr, "Error: --debug and --daemon are mutually exclusive\n");
+                return 1;
+            }
+            mode = MODE_DEBUG;
+            break;
+        case 'D':
+            if (mode != MODE_NONE) {
+                fprintf(stderr, "Error: --debug and --daemon are mutually exclusive\n");
+                return 1;
+            }
+            mode = MODE_DAEMON;
+            break;
+        case 'H':
+            strncpy(daemon_cfg.udp_host, optarg, INET_ADDRSTRLEN - 1);
+            daemon_cfg.udp_host[INET_ADDRSTRLEN - 1] = '\0';
+            break;
+        case 'P':
+            daemon_cfg.udp_port = atoi(optarg);
+            if (daemon_cfg.udp_port == 0) {
+                fprintf(stderr, "Error: Invalid UDP port\n");
+                return 1;
+            }
+            break;
+        case 'B':
+            daemon_cfg.batch_size = atoi(optarg);
+            if (daemon_cfg.batch_size == 0 || daemon_cfg.batch_size > MAX_BATCH_SIZE) {
+                fprintf(stderr, "Error: Batch size must be between 1 and %d\n", MAX_BATCH_SIZE);
+                return 1;
+            }
+            break;
+        case 'F':
+            daemon_cfg.flush_ms = atoi(optarg);
+            if (daemon_cfg.flush_ms == 0) {
+                fprintf(stderr, "Error: Flush interval must be > 0\n");
+                return 1;
+            }
+            break;
+        case 'v':
             verbose = true;
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        default:
+            print_usage(argv[0]);
+            return 1;
         }
+    }
+    
+    /* If no mode specified, print usage */
+    if (mode == MODE_NONE) {
+        fprintf(stderr, "Error: Must specify either --debug or --daemon mode\n\n");
+        print_usage(argv[0]);
+        return 1;
     }
     
     /* Set up libbpf errors and debug info callback */
@@ -148,13 +374,23 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     
-    /* Set up ring buffer */
+    /* Set up ring buffer - pass skeleton as context for stats access */
     rb = ring_buffer__new(bpf_map__fd(skel->maps.flow_events), 
-                          handle_flow_event, NULL, NULL);
+                          handle_flow_event, skel, NULL);
     if (!rb) {
         err = -1;
         fprintf(stderr, "Failed to create ring buffer\n");
         goto cleanup;
+    }
+    
+    /* Initialize UDP socket for daemon mode */
+    if (mode == MODE_DAEMON) {
+        if (init_udp_socket() < 0) {
+            err = -1;
+            goto cleanup;
+        }
+        printf("Daemon mode: sending batches to %s:%d\n", 
+               daemon_cfg.udp_host, daemon_cfg.udp_port);
     }
     
     /* Initialize stats to 0 - for per-CPU maps, need to initialize all CPUs */
@@ -164,15 +400,23 @@ int main(int argc, char **argv)
         bpf_map_update_elem(bpf_map__fd(skel->maps.stats), &key, zeros, BPF_ANY);
     }
     
-    printf("Successfully started TCP flow monitor!\n");
+    printf("Successfully started TCP flow monitor in %s mode!\n", 
+           mode == MODE_DEBUG ? "debug" : "daemon");
     if (verbose) {
-        printf("Running in verbose mode - showing all events\n");
+        printf("Running in verbose mode\n");
+    }
+    if (mode == MODE_DAEMON) {
+        printf("Batch size: %u, Flush interval: %ums\n", 
+               daemon_cfg.batch_size, daemon_cfg.flush_ms);
     }
     printf("Press Ctrl-C to stop.\n\n");
     
     /* Main loop */
     while (running) {
-        err = ring_buffer__poll(rb, 100 /* timeout_ms */);
+        /* Use shorter poll timeout in daemon mode for timer-based flush */
+        int poll_timeout_ms = mode == MODE_DAEMON ? 50 : 100;
+        
+        err = ring_buffer__poll(rb, poll_timeout_ms);
         if (err == -EINTR) {
             err = 0;
             break;
@@ -181,6 +425,26 @@ int main(int argc, char **argv)
             fprintf(stderr, "Error polling ring buffer: %d\n", err);
             break;
         }
+        
+        /* Check for timer-based flush in daemon mode */
+        if (mode == MODE_DAEMON && current_batch.count > 0) {
+            __u64 now = get_monotonic_ns();
+            __u64 elapsed_ms = (now - current_batch.first_timestamp_ns) / 1000000;
+            
+            if (elapsed_ms >= daemon_cfg.flush_ms) {
+                if (verbose) {
+                    printf("Timer flush: %u flows after %llums\n", 
+                           current_batch.count, elapsed_ms);
+                }
+                send_batch(skel);
+            }
+        }
+    }
+    
+    /* Send any remaining batch before exit */
+    if (mode == MODE_DAEMON && current_batch.count > 0) {
+        printf("Sending final batch with %u flows\n", current_batch.count);
+        send_batch(skel);
     }
     
     /* Print final statistics */
@@ -205,6 +469,9 @@ int main(int argc, char **argv)
     }
 
 cleanup:
+    if (udp_sock >= 0) {
+        close(udp_sock);
+    }
     ring_buffer__free(rb);
     tcp_monitor_bpf__destroy(skel);
     return err < 0 ? -err : 0;

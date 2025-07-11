@@ -133,17 +133,44 @@ Tracks complete TCP socket lifecycle with flow metadata:
 ```bash
 # Build and run
 make build/tcp_monitor
-sudo ./build/tcp_monitor --verbose
+
+# Run in debug mode (prints flows to stdout)
+sudo ./build/tcp_monitor --debug --verbose
+
+# Run in daemon mode (batches flows and sends via UDP)
+sudo ./build/tcp_monitor --daemon --udp-host 10.0.0.5 --udp-port 5001
 
 # Run integration tests
 sudo ./test_tcp_monitor.sh
 
-# Monitor captures:
-# - Connection 5-tuple (src/dst IP:port)
-# - DSCP values for QoS tracking
-# - Bytes sent/received (placeholder - needs byte counting tracepoints)
-# - Connection duration
+# Test daemon mode
+./test_daemon_mode.sh
 ```
+
+#### Operating Modes
+
+1. **Debug Mode** (`--debug`): Prints each flow record to stdout as connections complete
+2. **Daemon Mode** (`--daemon`): Batches flow records and sends them via UDP to a rack-level sampler
+
+#### Daemon Mode Options
+
+- `--udp-host HOST`: Rack sampler IP address (default: 127.0.0.1)
+- `--udp-port PORT`: Rack sampler UDP port (default: 5001)
+- `--batch-size N`: Records per batch (default: 128, max: 256)
+- `--flush-ms MS`: Max time before flush (default: 200ms)
+
+#### Wire Format
+
+Daemon mode sends UDP packets with this format:
+```
+[2 bytes: count in network order][count × flow_record structures]
+```
+
+Each flow_record contains:
+- Connection 5-tuple (src/dst IP:port)
+- DSCP values for QoS tracking
+- Bytes sent/received with CO-RE fallback
+- Connection duration in nanoseconds
 
 The monitor uses:
 - **BPF_MAP_TYPE_HASH**: Track active flows by socket pointer
@@ -215,9 +242,13 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c | head -20
 ## Next Steps
 
 1. **TASK-002**: ~~Implement full TCP socket lifecycle tracking~~ ✓ Complete
-2. **TASK-003**: Add per-rack sampling layer
-3. **TASK-004**: Build daemon for continuous monitoring  
-4. **TASK-005**: Integrate with Polyphony controller
+2. **TASK-003**: ~~Implement ring buffer for flow records~~ ✓ Complete
+3. **TASK-004**: ~~Add daemon mode to tcp_monitor~~ ✓ Complete
+4. **TASK-005**: ~~Add DSCP extraction logic~~ ✓ Complete
+5. **TASK-006**: Implement per-rack sampler
+6. **TASK-007**: Implement probe testing framework
+7. **TASK-008**: Benchmark eBPF probe overhead
+8. **TASK-009**: Implement controller-side flow expansion
 
 ### Known Limitations
 
