@@ -81,7 +81,7 @@ See timeline in Chapter 5 of the thesis for detailed milestones.
 Rather than separate binaries for debugging and production, we implement a single `tcp_monitor` executable with multiple modes:
 
 - `tcp_monitor --debug` (or no flags): Current behavior - prints flows to stdout for debugging
-- `tcp_monitor --daemon --rack <addr:port>`: Production mode - batches flows and sends via UDP
+- `tcp_monitor --daemon --udp-host <host> --udp-port <port>`: Production mode - batches flows and sends via UDP
 
 This approach:
 - Avoids code duplication for eBPF loading and ring buffer handling

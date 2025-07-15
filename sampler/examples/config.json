@@ -1,0 +1,29 @@
+{
+    "sampling": {
+        "rules": [
+            {
+                "max_bytes": 10240,
+                "rate": 0.03125
+            },
+            {
+                "max_bytes": 1048576,
+                "rate": 0.25
+            },
+            {
+                "max_bytes": null,
+                "rate": 1.0
+            }
+        ]
+    },
+    "batching": {
+        "max_batch_size": 128,
+        "timeout_ms": 100
+    },
+    "controller": {
+        "address": "10.0.0.1:5000"
+    },
+    "monitoring": {
+        "window_seconds": 60,
+        "warn_on_empty_class": true
+    }
+}

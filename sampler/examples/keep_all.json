@@ -1,0 +1,21 @@
+{
+    "sampling": {
+        "rules": [
+            {
+                "max_bytes": null,
+                "rate": 1.0
+            }
+        ]
+    },
+    "batching": {
+        "max_batch_size": 128,
+        "timeout_ms": 100
+    },
+    "controller": {
+        "address": "10.0.0.1:5000"
+    },
+    "monitoring": {
+        "window_seconds": 60,
+        "warn_on_empty_class": true
+    }
+}
