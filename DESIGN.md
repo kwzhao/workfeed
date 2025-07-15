@@ -8,7 +8,7 @@ Workfeed is a distributed workload collection system that captures real-time net
 
 Polyphony's prediction models (Parsimon, m3) require per-class workload characteristics as input:
 - Flow arrival rates
-- Flow size distributions  
+- Flow size distributions
 - DSCP class breakdowns
 
 However, collecting every flow in a large datacenter is prohibitively expensive:
@@ -26,8 +26,8 @@ Workfeed uses a three-stage pipeline to balance accuracy with efficiency:
 - Captures: 5-tuple, DSCP, bytes, start/end times
 - Minimal overhead (~50ns per flow)
 
-### 2. Per-Rack Sampling  
-- Deterministic sampling based on flow size:
+### 2. Per-Rack Sampling
+- Deterministic sampling based on flow size (examples below)
   - Large flows (>1MB): Keep 100%
   - Medium flows: Keep ~10%
   - Small flows: Keep ~3%
@@ -110,6 +110,6 @@ Each component can be developed and tested independently.
 ## Future Extensions
 
 - **Sketch-based summaries**: Use count-min sketches for even lower overhead
-- **ML-based interpolation**: Learn patterns to improve reconstruction accuracy  
+- **ML-based interpolation**: Learn patterns to improve reconstruction accuracy
 - **Multi-tier sampling**: Add ToR-level aggregation for larger scale
 - **Application awareness**: Correlate flows with job IDs for better classification
