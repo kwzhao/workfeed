@@ -4,7 +4,7 @@
  * Tracks TCP socket lifecycle events and captures per-flow statistics.
  */
 
-#include "vmlinux_dev.h"
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
@@ -226,7 +226,7 @@ int trace_tcp_destroy_sock(struct trace_event_raw_tcp_event_sk *ctx)
     if (rec) {
         /* Read final TCP stats first - this captures all bytes including FIN-WAIT */
         read_tcp_stats(sk, rec);
-        
+
         /* If end_ns wasn't set (flow never left ESTABLISHED or never reached it),
          * set it now AFTER reading final byte counters */
         if (rec->end_ns == 0) {
