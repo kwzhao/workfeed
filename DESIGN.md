@@ -27,20 +27,21 @@ Workfeed uses a three-stage pipeline to balance accuracy with efficiency:
 - Minimal overhead (~50ns per flow)
 
 ### 2. Per-Rack Sampling
-- Deterministic sampling based on flow size (examples below)
-  - Large flows (>1MB): Keep 100%
-  - Medium flows: Keep ~10%
-  - Small flows: Keep ~3%
-- Hash-based decisions ensure consistency
-- Per-DSCP quotas prevent class starvation
-- Batched transmission to controller
+- Deterministic sampling based on flow size
+  - Example configuration might sample large flows (e.g., >1MB) at higher rates
+  - Medium and small flows sampled at progressively lower rates
+  - Exact thresholds and rates are configurable via JSON rules
+- Hash-based decisions ensure consistency (hash of 5-tuple + DSCP)
+- Each sampled flow gets a weight = 1/sampling_rate for reconstruction
+- Batched transmission to controller via UDP
 
-### 3. Controller-Side Expansion
+### 3. Controller-Side Expansion (Planned)
 - Statistical reconstruction of full workload:
   - Poisson replication based on sampling weights
   - Exponential inter-arrival time jittering
   - Source port variation for ECMP diversity
 - Outputs simulator-ready flow lists
+- Note: Not yet implemented in current sampler
 
 ## Design Decisions
 
@@ -92,10 +93,11 @@ This approach:
 #### Per-Host Collector Architecture
 
 The daemon mode implements batching with:
-- Fixed-size batches (default 128 flows, configurable via `--batch-size`)
-- Timer-based partial flush every 50ms (prevents flow records from getting stuck)
+- Fixed-size batches (default 128 flows, max 256, configurable via `--batch-size`)
+- Timer-based partial flush (default 200ms via `--flush-ms`)
 - Drop-on-error for UDP failures (avoids blocking)
 - Extended statistics for monitoring batch performance
+- Per-CPU statistics to avoid lock contention
 
 #### Component Separation
 
@@ -107,8 +109,53 @@ The complete pipeline consists of:
 
 Each component can be developed and tested independently.
 
+## Implementation Details
+
+### Flow Record Format
+Each flow record is 48 bytes containing:
+- IPv4 addresses (saddr, daddr) - host byte order
+- Ports (sport, dport) - network byte order
+- Protocol (always 6 for TCP)
+- DSCP value (extracted from TOS field)
+- Timestamps (start_ns, end_ns) - nanosecond precision
+- Byte counters (bytes_sent, bytes_recv)
+
+### Packet Protocol
+UDP packets contain:
+- 2-byte count header (network byte order)
+- N flow records (48 bytes each)
+- Maximum ~9000 bytes per packet (MTU safe)
+
+### Configuration Format
+```json
+{
+  "sampling": {
+    "rules": [
+      {"max_bytes": 10240, "rate": 0.03125},      // ≤10KB: 3.125%
+      {"max_bytes": 1048576, "rate": 0.25},       // ≤1MB: 25%
+      {"max_bytes": null, "rate": 1.0}            // >1MB: 100%
+    ]
+  },
+  "batching": {
+    "max_batch_size": 128,
+    "timeout_ms": 100
+  },
+  "controller": {
+    "address": "10.0.0.1:5000"
+  }
+}
+```
+
+### Current Limitations
+- IPv4 only (IPv6 connections counted but not captured)
+- TCP only (no UDP flow tracking)
+- No per-DSCP quotas (pure size-based sampling)
+- Controller-side expansion not yet implemented
+
 ## Future Extensions
 
+- **Per-DSCP quotas**: Prevent traffic class starvation
+- **IPv6 support**: Extend eBPF probe for IPv6 flows
 - **Sketch-based summaries**: Use count-min sketches for even lower overhead
 - **ML-based interpolation**: Learn patterns to improve reconstruction accuracy
 - **Multi-tier sampling**: Add ToR-level aggregation for larger scale
