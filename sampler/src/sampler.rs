@@ -21,7 +21,7 @@ impl Sampler {
         let (rule, rule_idx) = self.config.find_rule(size);
 
         // Compute deterministic hash of flow
-        let hash = self.compute_flow_hash(flow);
+        let hash = Self::compute_flow_hash(flow);
 
         // Map hash to [0, 1) range
         let hash_value = (hash as f64) / (u64::MAX as f64);
@@ -37,7 +37,7 @@ impl Sampler {
     }
 
     /// Compute deterministic hash of flow
-    fn compute_flow_hash(&self, flow: &FlowInfo) -> u64 {
+    fn compute_flow_hash(flow: &FlowInfo) -> u64 {
         let mut hasher = AHasher::default();
 
         // Hash 5-tuple + DSCP for deterministic sampling
