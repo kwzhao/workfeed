@@ -1,12 +1,12 @@
-use serde::{Deserialize, Serialize, Serializer, Deserializer};
 use serde::de::{self, Visitor};
-use std::net::Ipv4Addr;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+use std::net::Ipv4Addr;
 
 /// Helper module for serializing IPs as strings
 mod ip_serde {
     use super::*;
-    
+
     pub fn serialize<S>(ip: &u32, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -14,30 +14,31 @@ mod ip_serde {
         let addr = Ipv4Addr::from(*ip);
         serializer.serialize_str(&addr.to_string())
     }
-    
+
     pub fn deserialize<'de, D>(deserializer: D) -> Result<u32, D::Error>
     where
         D: Deserializer<'de>,
     {
         struct IpVisitor;
-        
+
         impl<'de> Visitor<'de> for IpVisitor {
             type Value = u32;
-            
+
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("an IPv4 address string")
             }
-            
+
             fn visit_str<E>(self, value: &str) -> Result<u32, E>
             where
                 E: de::Error,
             {
-                value.parse::<Ipv4Addr>()
+                value
+                    .parse::<Ipv4Addr>()
                     .map(|addr| u32::from(addr))
                     .map_err(de::Error::custom)
             }
         }
-        
+
         deserializer.deserialize_str(IpVisitor)
     }
 }
@@ -169,17 +170,17 @@ impl FlowPacket {
             // - Ports are in network byte order (from eBPF conversion)
             // - Timestamps and bytes are in host byte order
             let flow = FlowInfo {
-                saddr: flow.saddr,                  // Already in host order
-                daddr: flow.daddr,                  // Already in host order
-                sport: u16::from_be(flow.sport),    // Convert from network order
-                dport: u16::from_be(flow.dport),    // Convert from network order
+                saddr: flow.saddr,               // Already in host order
+                daddr: flow.daddr,               // Already in host order
+                sport: u16::from_be(flow.sport), // Convert from network order
+                dport: u16::from_be(flow.dport), // Convert from network order
                 protocol: flow.protocol,
                 dscp: flow.dscp,
                 _pad: flow._pad,
-                start_time_ns: flow.start_time_ns,  // Already in host order
-                end_time_ns: flow.end_time_ns,      // Already in host order
-                bytes_sent: flow.bytes_sent,        // Already in host order
-                bytes_recv: flow.bytes_recv,        // Already in host order
+                start_time_ns: flow.start_time_ns, // Already in host order
+                end_time_ns: flow.end_time_ns,     // Already in host order
+                bytes_sent: flow.bytes_sent,       // Already in host order
+                bytes_recv: flow.bytes_recv,       // Already in host order
             };
 
             flows.push(flow);
@@ -209,17 +210,17 @@ impl FlowPacket {
             // - Ports in network byte order
             // - Timestamps and bytes in host byte order
             let net_flow = FlowInfo {
-                saddr: flow.saddr,                  // Keep in host order
-                daddr: flow.daddr,                  // Keep in host order
-                sport: flow.sport.to_be(),          // Convert to network order
-                dport: flow.dport.to_be(),          // Convert to network order
+                saddr: flow.saddr,         // Keep in host order
+                daddr: flow.daddr,         // Keep in host order
+                sport: flow.sport.to_be(), // Convert to network order
+                dport: flow.dport.to_be(), // Convert to network order
                 protocol: flow.protocol,
                 dscp: flow.dscp,
                 _pad: 0,
-                start_time_ns: flow.start_time_ns,  // Keep in host order
-                end_time_ns: flow.end_time_ns,      // Keep in host order
-                bytes_sent: flow.bytes_sent,        // Keep in host order
-                bytes_recv: 0,                      // Not used, set to 0
+                start_time_ns: flow.start_time_ns, // Keep in host order
+                end_time_ns: flow.end_time_ns,     // Keep in host order
+                bytes_sent: flow.bytes_sent,       // Keep in host order
+                bytes_recv: 0,                     // Not used, set to 0
             };
 
             let bytes = unsafe {
@@ -251,17 +252,17 @@ mod tests {
         let mut data = vec![0, 2]; // count = 2
 
         let flow1 = FlowInfo {
-            saddr: 0x0a000001u32,      // 10.0.0.1 in host order
-            daddr: 0x0a000002u32,      // 10.0.0.2 in host order
-            sport: 1234u16.to_be(),    // Port in network order
-            dport: 80u16.to_be(),      // Port in network order
+            saddr: 0x0a000001u32,   // 10.0.0.1 in host order
+            daddr: 0x0a000002u32,   // 10.0.0.2 in host order
+            sport: 1234u16.to_be(), // Port in network order
+            dport: 80u16.to_be(),   // Port in network order
             protocol: 6,
             dscp: 10,
             _pad: 0,
-            start_time_ns: 1000u64,    // Host order
-            end_time_ns: 2000u64,      // Host order
-            bytes_sent: 1024u64,       // Host order
-            bytes_recv: 512u64,        // Host order
+            start_time_ns: 1000u64, // Host order
+            end_time_ns: 2000u64,   // Host order
+            bytes_sent: 1024u64,    // Host order
+            bytes_recv: 512u64,     // Host order
         };
 
         let flow_bytes = unsafe {

@@ -216,17 +216,17 @@ mod tests {
         // Build packet - simulate what tcp_monitor sends
         let mut packet = vec![0, 1]; // count = 1
         let flow_be = FlowInfo {
-            saddr: flow.saddr,             // Host order
-            daddr: flow.daddr,             // Host order
-            sport: 1234u16.to_be(),        // Network order
-            dport: 80u16.to_be(),          // Network order
+            saddr: flow.saddr,      // Host order
+            daddr: flow.daddr,      // Host order
+            sport: 1234u16.to_be(), // Network order
+            dport: 80u16.to_be(),   // Network order
             protocol: flow.protocol,
             dscp: flow.dscp,
             _pad: 0,
-            start_time_ns: flow.start_time_ns,    // Host order
-            end_time_ns: flow.end_time_ns,        // Host order
-            bytes_sent: flow.bytes_sent,          // Host order
-            bytes_recv: flow.bytes_recv,          // Host order
+            start_time_ns: flow.start_time_ns, // Host order
+            end_time_ns: flow.end_time_ns,     // Host order
+            bytes_sent: flow.bytes_sent,       // Host order
+            bytes_recv: flow.bytes_recv,       // Host order
         };
 
         let flow_bytes = unsafe {
