@@ -88,7 +88,7 @@ impl SamplingConfig {
             }
         }
         // Should never reach here if validation passed
-        panic!("No sampling rule found for size {}", size);
+        panic!("No sampling rule found for size {size}");
     }
 
     /// Get a human-readable bucket name for a rule
@@ -101,8 +101,8 @@ impl SamplingConfig {
         };
 
         match rule.max_bytes {
-            Some(max) => format!("{}B-{}B", prev_max, max),
-            None => format!("{}B+", prev_max),
+            Some(max) => format!("{prev_max}B-{max}B"),
+            None => format!("{prev_max}B+"),
         }
     }
 }

@@ -34,7 +34,7 @@ mod ip_serde {
             {
                 value
                     .parse::<Ipv4Addr>()
-                    .map(|addr| u32::from(addr))
+                    .map(u32::from)
                     .map_err(de::Error::custom)
             }
         }

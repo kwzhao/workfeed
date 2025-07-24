@@ -137,7 +137,7 @@ impl SamplerStats {
         let runtime = self.runtime();
         let rate = self.overall_sampling_rate();
 
-        let mut report = format!("Sampler Statistics (runtime: {:?})\n", runtime);
+        let mut report = format!("Sampler Statistics (runtime: {runtime:?})\n");
         report.push_str(&format!(
             "Total flows: {} (sampled: {}, rate: {:.2}%)\n",
             self.total_flows,
@@ -172,7 +172,7 @@ impl SamplerStats {
             rule_vec.sort_by_key(|(name, _)| name.as_str());
 
             for (rule, count) in rule_vec {
-                report.push_str(&format!("  {}: {} flows\n", rule, count));
+                report.push_str(&format!("  {rule}: {count} flows\n"));
             }
         }
 

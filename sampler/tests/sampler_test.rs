@@ -103,9 +103,9 @@ fn test_sampling_rates() {
     let medium_rate = sampled_medium as f64 / 10000.0;
     let large_rate = sampled_large as f64 / 10000.0;
 
-    println!("Small flow sampling rate: {:.4}", small_rate);
-    println!("Medium flow sampling rate: {:.4}", medium_rate);
-    println!("Large flow sampling rate: {:.4}", large_rate);
+    println!("Small flow sampling rate: {small_rate:.4}");
+    println!("Medium flow sampling rate: {medium_rate:.4}");
+    println!("Large flow sampling rate: {large_rate:.4}");
 
     // Allow 10% variance
     assert!((small_rate - 0.03125).abs() < 0.01);
