@@ -1,8 +1,4 @@
-use sampler::{
-    config::Config,
-    flow::{FlowInfo, FlowPacket},
-    sampler::Sampler,
-};
+use sampler::{config::Config, flow::FlowInfo, sampler::Sampler};
 
 #[test]
 fn test_config_loading() {
@@ -151,13 +147,15 @@ fn test_packet_parsing_and_serialization() {
         .map(|f| sampler::flow::SampledFlow::new(*f, 1.0, "test"))
         .collect();
 
-    // Serialize
-    let data = FlowPacket::serialize(&sampled).unwrap();
+    // Test JSON serialization for TCP transmission
+    let json = serde_json::to_vec(&sampled).unwrap();
 
-    // Parse back
-    let parsed = FlowPacket::parse(&data).unwrap();
+    // Deserialize back to verify integrity
+    let deserialized: Vec<sampler::flow::SampledFlow> = serde_json::from_slice(&json).unwrap();
 
-    assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].saddr, flows[0].saddr);
-    assert_eq!(parsed[1].daddr, flows[1].daddr);
+    // Verify data integrity
+    assert_eq!(sampled.len(), deserialized.len());
+    assert_eq!(sampled[0].weight, deserialized[0].weight);
+    assert_eq!(sampled[0].sampling_bucket, deserialized[0].sampling_bucket);
+    assert_eq!(sampled[0].flow.bytes_sent, deserialized[0].flow.bytes_sent);
 }

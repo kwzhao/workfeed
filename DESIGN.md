@@ -2,161 +2,206 @@
 
 ## Overview
 
-Workfeed is a distributed workload collection system that captures real-time network traffic patterns and transforms them into traces suitable for Polyphony's performance simulators. It bridges the gap between Polyphony's need for workload information and the practical constraints of monitoring large-scale networks.
+Workfeed is a distributed workload collection system that captures real-time network traffic patterns for Polyphony's performance simulators. It efficiently monitors large-scale networks while maintaining the accuracy needed for tail latency prediction.
 
 ## Problem Statement
 
-Polyphony's prediction models (Parsimon, m3) require per-class workload characteristics as input:
-- Flow arrival rates
+### Requirements
+Polyphony's prediction models (Parsimon, m3) require per-class workload characteristics:
+- Flow arrival rates by traffic class
 - Flow size distributions
 - DSCP class breakdowns
 
-However, collecting every flow in a large datacenter is prohibitively expensive:
-- Millions of flows per second across thousands of hosts
-- Would overwhelm any centralized collection point
-- Most flows are tiny mice that individually don't affect tail latency
+### Challenges
+Complete flow collection in datacenters is infeasible due to:
+- **Scale**: Millions of flows per second across thousands of hosts
+- **Bandwidth**: Centralized collection would create network bottlenecks
+- **Relevance**: Most flows are small mice with negligible impact on tail latency
 
 ## Architecture
 
-Workfeed uses a three-stage pipeline to balance accuracy with efficiency:
+Workfeed employs a three-stage pipeline that balances measurement accuracy with collection efficiency:
 
-### 1. Per-Host Collection (eBPF)
-- Lightweight eBPF probes attached to TCP socket events
-- Zero-copy collection via ring buffers
-- Captures: 5-tuple, DSCP, bytes, start/end times
-- Minimal overhead (~50ns per flow)
+### Stage 1: Per-Host Collection (eBPF)
+**Purpose**: Capture all TCP flows with minimal overhead
 
-### 2. Per-Rack Sampling
-- Deterministic sampling based on flow size
-  - Example configuration might sample large flows (e.g., >1MB) at higher rates
-  - Medium and small flows sampled at progressively lower rates
-  - Exact thresholds and rates are configurable via JSON rules
-- Hash-based decisions ensure consistency (hash of 5-tuple + DSCP)
-- Each sampled flow gets a weight = 1/sampling_rate for reconstruction
-- Batched transmission to controller via UDP
+- **Technology**: eBPF probes on TCP socket lifecycle events
+- **Performance**: ~50ns overhead per flow via zero-copy ring buffers
+- **Data captured**:
+  - Network 5-tuple (source/dest IP:port, protocol)
+  - DSCP marking for traffic classification
+  - Byte counters (sent/received)
+  - Precise timestamps (nanosecond resolution)
 
-### 3. Controller-Side Expansion (Planned)
-- Statistical reconstruction of full workload:
-  - Poisson replication based on sampling weights
-  - Exponential inter-arrival time jittering
-  - Source port variation for ECMP diversity
-- Outputs simulator-ready flow lists
-- Note: Not yet implemented in current sampler
+### Stage 2: Per-Rack Sampling
+**Purpose**: Reduce data volume while preserving statistical properties
 
-## Design Decisions
+- **Sampling strategy**: Size-based deterministic sampling
+  - Large flows (>1MB): 100% sampling rate
+  - Medium flows (10KB-1MB): 25% sampling rate
+  - Small flows (<10KB): 3.125% sampling rate
+  - Rates fully configurable via JSON rules
+- **Consistency**: Hash-based decisions using (5-tuple + DSCP)
+- **Reconstruction**: Each sample carries weight = 1/sampling_rate
+- **Transport**: Batched UDP transmission to controller
 
-### Why eBPF?
-- In-kernel execution avoids context switches
-- Safe: verified programs can't crash the kernel
-- Ubiquitous: available in modern Linux kernels
-- Efficient: near-zero overhead for high-speed networks
+### Stage 3: Controller-Side Expansion (Planned)
+**Purpose**: Reconstruct complete workload from samples
 
-### Why Size-Based Sampling?
-- Large flows dominate bytes and queue occupancy
-- Small flows are numerous but individually insignificant
-- Size-aware sampling preserves tail behavior while reducing volume 100x
+- **Statistical methods**:
+  - Poisson process replication using sampling weights
+  - Exponential distribution for inter-arrival times
+  - Source port randomization for ECMP path diversity
+- **Output**: Simulator-ready flow traces
+- **Status**: Design complete, implementation pending
 
-### Why Statistical Reconstruction?
-- Simulators expect complete flow lists, not samples
-- Poisson/exponential models match real traffic patterns
-- Preserves statistical properties needed for accurate prediction
+## Design Rationale
+
+### eBPF for Host-Level Collection
+eBPF provides the ideal balance of safety, performance, and deployability:
+- **Performance**: In-kernel execution eliminates context switches
+- **Safety**: Verified programs cannot crash or compromise the kernel
+- **Availability**: Standard in Linux 4.x+ kernels
+- **Efficiency**: Near-zero overhead enables line-rate monitoring
+
+### Size-Based Sampling Strategy
+This approach leverages the empirical observation that flow impact correlates with size:
+- **Large flows** (elephants): Dominate queue occupancy and tail latency
+- **Small flows** (mice): Numerous but individually negligible for tail metrics
+- **Result**: 100× data reduction while preserving tail behavior accuracy
+
+### Statistical Reconstruction Methodology
+Reconstruction transforms samples back into complete workloads:
+- **Requirement**: Simulators need complete flow lists, not statistical summaries
+- **Approach**: Well-established traffic models (Poisson arrivals, exponential sizes)
+- **Benefit**: Maintains statistical properties critical for accurate prediction
 
 ## Integration with Polyphony
 
-Workfeed runs as a shim between the network and Polyphony's controller:
+Workfeed seamlessly integrates into Polyphony's control loop:
 
 ```
-Network → Workfeed → Flow Traces → Simulators → Predictions → Controller
+Network Traffic → Workfeed Collection → Flow Traces → Simulators → Predictions → Controller
 ```
 
-The controller queries Workfeed once per epoch (e.g., every 30 seconds) to get the latest workload snapshot. This replaces the static workload files used in initial experiments.
+**Operation**: The controller queries Workfeed every epoch (typically 30 seconds) for updated workload snapshots, replacing static trace files from initial experiments.
 
-## Implementation Plan
+## Implementation Strategy
 
-See timeline in Chapter 5 of the thesis for detailed milestones.
+### Unified tcp_monitor Binary
 
-### Implementation Decisions
+A single executable supports both development and production use cases:
 
-#### Unified tcp_monitor Binary
+**Operating Modes**:
+- `tcp_monitor --debug`: Interactive debugging (prints to stdout)
+- `tcp_monitor --daemon --udp-host <host> --udp-port <port>`: Production mode (UDP batching)
 
-Rather than separate binaries for debugging and production, we implement a single `tcp_monitor` executable with multiple modes:
+**Benefits**:
+- Eliminates code duplication between debug and production paths
+- Enables immediate testing of probe modifications
+- Simplifies deployment with single-binary distribution
+- Facilitates incremental feature additions
 
-- `tcp_monitor --debug` (or no flags): Current behavior - prints flows to stdout for debugging
-- `tcp_monitor --daemon --udp-host <host> --udp-port <port>`: Production mode - batches flows and sends via UDP
+### Per-Host Collector Design
 
-This approach:
-- Avoids code duplication for eBPF loading and ring buffer handling
-- Keeps probe updates immediately testable in both modes
-- Simplifies packaging and deployment (single binary)
-- Makes future enhancements (sampling rates, etc.) easy to add
+The daemon mode optimizes for efficiency and reliability:
 
-#### Per-Host Collector Architecture
+**Batching Configuration**:
+- Batch size: 128 flows default, 256 max (`--batch-size`)
+- Flush interval: 200ms default (`--flush-ms`)
+- Failure handling: Drop-on-error prevents blocking
+- Performance monitoring: Extended batch statistics
+- Concurrency: Per-CPU statistics eliminate lock contention
 
-The daemon mode implements batching with:
-- Fixed-size batches (default 128 flows, max 256, configurable via `--batch-size`)
-- Timer-based partial flush (default 200ms via `--flush-ms`)
-- Drop-on-error for UDP failures (avoids blocking)
-- Extended statistics for monitoring batch performance
-- Per-CPU statistics to avoid lock contention
+### Component Architecture
 
-#### Component Separation
+The pipeline separates concerns across four independent components:
 
-The complete pipeline consists of:
-1. **eBPF probe** (kernel space): Captures TCP lifecycle events
-2. **tcp_monitor** (per-host): Collects and batches flow records
-3. **Per-rack sampler** (separate process): Applies size-based sampling
-4. **Controller shim** (at controller): Expands samples into full workload
+1. **eBPF Probe** (kernel space)
+   - Intercepts TCP socket lifecycle events
+   - Extracts flow metadata with minimal overhead
+   
+2. **tcp_monitor** (per-host userspace)
+   - Consumes eBPF ring buffer events
+   - Batches and forwards flow records
+   
+3. **Sampler** (per-rack aggregation)
+   - Applies configurable size-based sampling
+   - Maintains per-class statistics
+   
+4. **Controller Shim** (centralized)
+   - Expands samples into complete workloads
+   - Feeds simulators with reconstructed traces
 
-Each component can be developed and tested independently.
+This modular design enables independent development, testing, and deployment of each component.
 
-## Implementation Details
+## Technical Specifications
 
-### Flow Record Format
-Each flow record is 48 bytes containing:
-- IPv4 addresses (saddr, daddr) - host byte order
-- Ports (sport, dport) - network byte order
-- Protocol (always 6 for TCP)
-- DSCP value (extracted from TOS field)
-- Timestamps (start_ns, end_ns) - nanosecond precision
-- Byte counters (bytes_sent, bytes_recv)
+### Flow Record Structure
+Each flow record occupies exactly 48 bytes:
 
-### Packet Protocol
-UDP packets contain:
-- 2-byte count header (network byte order)
-- N flow records (48 bytes each)
-- Maximum ~9000 bytes per packet (MTU safe)
+| Field | Size | Type | Description |
+|-------|------|------|-------------|
+| `saddr` | 4B | uint32 | Source IPv4 (host byte order) |
+| `daddr` | 4B | uint32 | Destination IPv4 (host byte order) |
+| `sport` | 2B | uint16 | Source port (network byte order) |
+| `dport` | 2B | uint16 | Destination port (network byte order) |
+| `protocol` | 1B | uint8 | Protocol (always 6 for TCP) |
+| `dscp` | 1B | uint8 | DSCP value from TOS field |
+| `start_ns` | 8B | uint64 | Flow start (nanoseconds) |
+| `end_ns` | 8B | uint64 | Flow end (nanoseconds) |
+| `bytes_sent` | 8B | uint64 | Bytes sent by source |
+| `bytes_recv` | 8B | uint64 | Bytes received by source |
 
-### Configuration Format
+### Wire Protocol
+UDP packet structure for flow transmission:
+
+```
+[Header: 2 bytes] [Flow Records: N × 48 bytes]
+```
+- **Header**: Flow count (uint16, network byte order)
+- **Payload**: Consecutive flow records
+- **MTU Safety**: Maximum ~9000 bytes per packet
+
+### Configuration Schema
+
 ```json
 {
   "sampling": {
     "rules": [
-      {"max_bytes": 10240, "rate": 0.03125},      // ≤10KB: 3.125%
-      {"max_bytes": 1048576, "rate": 0.25},       // ≤1MB: 25%
-      {"max_bytes": null, "rate": 1.0}            // >1MB: 100%
+      {"max_bytes": 10240, "rate": 0.03125},      // Small: ≤10KB @ 3.125%
+      {"max_bytes": 1048576, "rate": 0.25},       // Medium: ≤1MB @ 25%
+      {"max_bytes": null, "rate": 1.0}            // Large: >1MB @ 100%
     ]
   },
   "batching": {
-    "max_batch_size": 128,
-    "timeout_ms": 100
+    "max_batch_size": 128,                        // Flows per batch
+    "timeout_ms": 100                             // Flush interval
   },
   "controller": {
-    "address": "10.0.0.1:5000"
+    "address": "10.0.0.1:5000"                    // Destination endpoint
   }
 }
 ```
 
-### Current Limitations
-- IPv4 only (IPv6 connections counted but not captured)
-- TCP only (no UDP flow tracking)
-- No per-DSCP quotas (pure size-based sampling)
-- Controller-side expansion not yet implemented
+## Known Limitations
 
-## Future Extensions
+| Limitation | Impact | Workaround |
+|------------|--------|------------|
+| IPv4 only | IPv6 flows counted but not captured | IPv6 support planned |
+| TCP only | No UDP flow visibility | UDP tracking in roadmap |
+| No per-DSCP quotas | Potential class starvation | Manual rate tuning |
+| Controller expansion pending | No automatic workload reconstruction | Use raw samples |
 
-- **Per-DSCP quotas**: Prevent traffic class starvation
-- **IPv6 support**: Extend eBPF probe for IPv6 flows
-- **Sketch-based summaries**: Use count-min sketches for even lower overhead
-- **ML-based interpolation**: Learn patterns to improve reconstruction accuracy
-- **Multi-tier sampling**: Add ToR-level aggregation for larger scale
-- **Application awareness**: Correlate flows with job IDs for better classification
+## Roadmap
+
+### Near-term Enhancements
+- **Per-DSCP quotas**: Ensure fair sampling across traffic classes
+- **IPv6 support**: Full dual-stack flow capture
+- **Controller expansion**: Complete statistical reconstruction implementation
+
+### Long-term Evolution
+- **Sketch-based compression**: Count-min sketches for extreme efficiency
+- **ML-driven reconstruction**: Learning-based workload interpolation
+- **Hierarchical aggregation**: Multi-tier sampling for hyperscale deployments
+- **Application integration**: Job-aware flow classification via metadata correlation

@@ -1,15 +1,15 @@
-use crate::flow::{FlowPacket, SampledFlow};
+use crate::flow::SampledFlow;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::UdpSocket;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{interval, Interval};
+use tokio::time::{interval, timeout, Interval};
 use tracing::{debug, error, info, warn};
 
 /// Batch forwarder for sampled flows
 pub struct BatchForwarder {
-    socket: UdpSocket,
     controller_addr: SocketAddr,
     max_batch_size: usize,
     timeout: Duration,
@@ -22,44 +22,80 @@ impl BatchForwarder {
         max_batch_size: usize,
         timeout_ms: u64,
     ) -> Result<Self> {
-        // Bind to any available port
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
         info!(
-            "Batch forwarder created, will send to {} (batch_size={}, timeout={}ms)",
+            "Batch forwarder created, will send to {} via TCP (batch_size={}, timeout={}ms)",
             controller_addr, max_batch_size, timeout_ms
         );
 
         Ok(Self {
-            socket,
             controller_addr,
             max_batch_size,
             timeout: Duration::from_millis(timeout_ms),
         })
     }
 
-    /// Send a batch of flows
+    /// Send a batch of flows with retry logic
     async fn send_batch(&self, batch: &[SampledFlow]) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
 
-        let data = FlowPacket::serialize(batch)?;
+        let data = serde_json::to_vec(batch)?;
 
-        match self.socket.send_to(&data, self.controller_addr).await {
-            Ok(sent) => {
-                debug!(
-                    "Sent batch of {} flows ({} bytes) to {}",
-                    batch.len(),
-                    sent,
-                    self.controller_addr
-                );
-                Ok(())
-            }
-            Err(e) => {
-                error!("Failed to send batch: {}", e);
-                Err(e.into())
+        // Retry logic with exponential backoff
+        let mut retry_delay = Duration::from_millis(100);
+        const MAX_RETRIES: u32 = 3;
+
+        for attempt in 1..=MAX_RETRIES {
+            match self.try_send_tcp(&data).await {
+                Ok(()) => {
+                    debug!(
+                        "Sent batch of {} flows ({} bytes) to {} via TCP",
+                        batch.len(),
+                        data.len(),
+                        self.controller_addr
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt == MAX_RETRIES {
+                        error!("Failed to send batch after {} attempts: {}", MAX_RETRIES, e);
+                        return Err(e);
+                    }
+                    warn!(
+                        "TCP send attempt {} failed: {}, retrying in {:?}",
+                        attempt, e, retry_delay
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay *= 2; // Exponential backoff
+                }
             }
         }
+
+        unreachable!()
+    }
+
+    /// Try to send data via TCP (connection-per-batch)
+    async fn try_send_tcp(&self, data: &[u8]) -> Result<()> {
+        // Connect with timeout
+        let stream = match timeout(
+            Duration::from_secs(5),
+            TcpStream::connect(self.controller_addr),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => return Err(anyhow::anyhow!("TCP connection failed: {}", e)),
+            Err(_) => return Err(anyhow::anyhow!("TCP connection timeout")),
+        };
+
+        // Write all data
+        let mut stream = stream;
+        stream.write_all(data).await?;
+        stream.flush().await?;
+
+        // Connection closes automatically when stream drops
+        Ok(())
     }
 
     /// Run the forwarder, consuming flows from the channel
@@ -296,9 +332,10 @@ mod tests {
         let addr = "127.0.0.1:5000".parse().unwrap();
         let forwarder = BatchForwarder::new(addr, 128, 100).await.unwrap();
 
-        // Should bind successfully
-        let local_addr = forwarder.socket.local_addr().unwrap();
-        assert_ne!(local_addr.port(), 0);
+        // Should create forwarder with correct settings
+        assert_eq!(forwarder.controller_addr, addr);
+        assert_eq!(forwarder.max_batch_size, 128);
+        assert_eq!(forwarder.timeout, Duration::from_millis(100));
     }
 
     #[tokio::test]

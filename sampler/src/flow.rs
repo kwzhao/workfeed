@@ -189,48 +189,6 @@ impl FlowPacket {
 
         Ok(flows)
     }
-
-    /// Serialize sampled flows for transmission to controller
-    pub fn serialize(flows: &[SampledFlow]) -> anyhow::Result<Vec<u8>> {
-        // For now, just send the flow info with same format
-        // TODO: Could enhance to include weights
-        let count = flows.len() as u16;
-        let flow_size = std::mem::size_of::<FlowInfo>();
-        let mut buffer = Vec::with_capacity(2 + flows.len() * flow_size);
-
-        // Write count
-        buffer.extend_from_slice(&count.to_be_bytes());
-
-        // Write flows
-        for sampled in flows {
-            let flow = sampled.flow;
-
-            // Convert to same format as tcp_monitor expects:
-            // - IPs in host byte order
-            // - Ports in network byte order
-            // - Timestamps and bytes in host byte order
-            let net_flow = FlowInfo {
-                saddr: flow.saddr,         // Keep in host order
-                daddr: flow.daddr,         // Keep in host order
-                sport: flow.sport.to_be(), // Convert to network order
-                dport: flow.dport.to_be(), // Convert to network order
-                protocol: flow.protocol,
-                dscp: flow.dscp,
-                _pad: 0,
-                start_time_ns: flow.start_time_ns, // Keep in host order
-                end_time_ns: flow.end_time_ns,     // Keep in host order
-                bytes_sent: flow.bytes_sent,       // Keep in host order
-                bytes_recv: 0,                     // Not used, set to 0
-            };
-
-            let bytes = unsafe {
-                std::slice::from_raw_parts(&net_flow as *const FlowInfo as *const u8, flow_size)
-            };
-            buffer.extend_from_slice(bytes);
-        }
-
-        Ok(buffer)
-    }
 }
 
 #[cfg(test)]
