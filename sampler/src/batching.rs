@@ -5,14 +5,16 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{interval, timeout, Interval};
-use tracing::{debug, error, info, warn};
+use tokio::time::{Interval, interval, timeout};
+use tracing::{debug, info, warn};
 
 /// Batch forwarder for sampled flows
 pub struct BatchForwarder {
     controller_addr: SocketAddr,
     max_batch_size: usize,
     timeout: Duration,
+    connection_timeout: Duration,
+    controller_available: bool,
 }
 
 impl BatchForwarder {
@@ -21,65 +23,64 @@ impl BatchForwarder {
         controller_addr: SocketAddr,
         max_batch_size: usize,
         timeout_ms: u64,
+        connection_timeout_ms: Option<u64>,
     ) -> Result<Self> {
+        let conn_timeout = connection_timeout_ms.unwrap_or(500);
         info!(
-            "Batch forwarder created, will send to {} via TCP (batch_size={}, timeout={}ms)",
-            controller_addr, max_batch_size, timeout_ms
+            "Batch forwarder created, will send to {} via TCP (batch_size={}, timeout={}ms, connection_timeout={}ms)",
+            controller_addr, max_batch_size, timeout_ms, conn_timeout
         );
 
         Ok(Self {
             controller_addr,
             max_batch_size,
             timeout: Duration::from_millis(timeout_ms),
+            connection_timeout: Duration::from_millis(conn_timeout),
+            controller_available: false,
         })
     }
 
-    /// Send a batch of flows with retry logic
-    async fn send_batch(&self, batch: &[SampledFlow]) -> Result<()> {
+    /// Best-effort send - try once and drop on failure
+    async fn send_batch(&self, batch: &[SampledFlow]) -> bool {
         if batch.is_empty() {
-            return Ok(());
+            return true;
         }
 
-        let data = serde_json::to_vec(batch)?;
+        let data = match serde_json::to_vec(batch) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Failed to serialize batch: {}", e);
+                return false;
+            }
+        };
 
-        // Retry logic with exponential backoff
-        let mut retry_delay = Duration::from_millis(100);
-        const MAX_RETRIES: u32 = 3;
-
-        for attempt in 1..=MAX_RETRIES {
-            match self.try_send_tcp(&data).await {
-                Ok(()) => {
-                    debug!(
-                        "Sent batch of {} flows ({} bytes) to {} via TCP",
-                        batch.len(),
-                        data.len(),
-                        self.controller_addr
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt == MAX_RETRIES {
-                        error!("Failed to send batch after {} attempts: {}", MAX_RETRIES, e);
-                        return Err(e);
-                    }
-                    warn!(
-                        "TCP send attempt {} failed: {}, retrying in {:?}",
-                        attempt, e, retry_delay
-                    );
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay *= 2; // Exponential backoff
-                }
+        // Single attempt with short timeout
+        match self.try_send_tcp(&data).await {
+            Ok(()) => {
+                debug!(
+                    "Sent batch of {} flows ({} bytes) to {} via TCP",
+                    batch.len(),
+                    data.len(),
+                    self.controller_addr
+                );
+                true
+            }
+            Err(e) => {
+                debug!(
+                    "Controller unreachable ({}), dropping {} flows",
+                    e,
+                    batch.len()
+                );
+                false
             }
         }
-
-        unreachable!()
     }
 
     /// Try to send data via TCP (connection-per-batch)
     async fn try_send_tcp(&self, data: &[u8]) -> Result<()> {
-        // Connect with timeout
+        // Connect with short timeout
         let stream = match timeout(
-            Duration::from_secs(5),
+            self.connection_timeout,
             TcpStream::connect(self.controller_addr),
         )
         .await
@@ -99,7 +100,7 @@ impl BatchForwarder {
     }
 
     /// Run the forwarder, consuming flows from the channel
-    pub async fn run(self, mut rx: mpsc::Receiver<SampledFlow>) -> Result<()> {
+    pub async fn run(mut self, mut rx: mpsc::Receiver<SampledFlow>) -> Result<()> {
         let mut batch = Vec::with_capacity(self.max_batch_size);
         let mut timer = interval(self.timeout);
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -107,6 +108,7 @@ impl BatchForwarder {
         let mut total_sent = 0u64;
         let mut total_batches = 0u64;
         let mut send_errors = 0u64;
+        let mut dropped_flows = 0u64;
 
         loop {
             tokio::select! {
@@ -116,12 +118,24 @@ impl BatchForwarder {
 
                     // Send if batch is full
                     if batch.len() >= self.max_batch_size {
-                        if let Err(e) = self.send_batch(&batch).await {
-                            send_errors += 1;
-                            warn!("Batch send error: {}", e);
-                        } else {
-                            total_sent += batch.len() as u64;
+                        let batch_size = batch.len() as u64;
+                        let success = self.send_batch(&batch).await;
+
+                        // Track connection state changes
+                        if success && !self.controller_available {
+                            info!("Controller connection established at {}", self.controller_addr);
+                            self.controller_available = true;
+                        } else if !success && self.controller_available {
+                            info!("Controller connection lost at {}", self.controller_addr);
+                            self.controller_available = false;
+                        }
+
+                        if success {
+                            total_sent += batch_size;
                             total_batches += 1;
+                        } else {
+                            send_errors += 1;
+                            dropped_flows += batch_size;
                         }
                         batch.clear();
                     }
@@ -130,12 +144,24 @@ impl BatchForwarder {
                 // Timeout - send partial batch
                 _ = timer.tick() => {
                     if !batch.is_empty() {
-                        if let Err(e) = self.send_batch(&batch).await {
-                            send_errors += 1;
-                            warn!("Timeout batch send error: {}", e);
-                        } else {
-                            total_sent += batch.len() as u64;
+                        let batch_size = batch.len() as u64;
+                        let success = self.send_batch(&batch).await;
+
+                        // Track connection state changes
+                        if success && !self.controller_available {
+                            info!("Controller connection established at {}", self.controller_addr);
+                            self.controller_available = true;
+                        } else if !success && self.controller_available {
+                            info!("Controller connection lost at {}", self.controller_addr);
+                            self.controller_available = false;
+                        }
+
+                        if success {
+                            total_sent += batch_size;
                             total_batches += 1;
+                        } else {
+                            send_errors += 1;
+                            dropped_flows += batch_size;
                         }
                         batch.clear();
                     }
@@ -143,10 +169,10 @@ impl BatchForwarder {
             }
 
             // Periodic stats
-            if total_batches % 100 == 0 && total_batches > 0 {
+            if (total_batches + send_errors) % 100 == 0 && (total_batches + send_errors) > 0 {
                 info!(
-                    "Forwarder stats: {} flows in {} batches, {} errors",
-                    total_sent, total_batches, send_errors
+                    "Forwarder stats: {} flows sent, {} flows dropped, {} successful batches, {} failed attempts",
+                    total_sent, dropped_flows, total_batches, send_errors
                 );
             }
         }
@@ -173,8 +199,15 @@ impl StatefulForwarder {
         controller_addr: SocketAddr,
         max_batch_size: usize,
         timeout_ms: u64,
+        connection_timeout_ms: Option<u64>,
     ) -> Result<Self> {
-        let forwarder = BatchForwarder::new(controller_addr, max_batch_size, timeout_ms).await?;
+        let forwarder = BatchForwarder::new(
+            controller_addr,
+            max_batch_size,
+            timeout_ms,
+            connection_timeout_ms,
+        )
+        .await?;
         Ok(Self {
             forwarder,
             stats: ForwarderStats::default(),
@@ -182,23 +215,20 @@ impl StatefulForwarder {
     }
 
     /// Send a batch and update stats
-    async fn send_batch_with_stats(&mut self, batch: &[SampledFlow]) -> Result<()> {
+    async fn send_batch_with_stats(&mut self, batch: &[SampledFlow]) -> bool {
         if batch.is_empty() {
-            return Ok(());
+            return true;
         }
 
-        match self.forwarder.send_batch(batch).await {
-            Ok(()) => {
-                self.stats.flows_sent += batch.len() as u64;
-                self.stats.batches_sent += 1;
-                self.update_avg_batch_size();
-                Ok(())
-            }
-            Err(e) => {
-                self.stats.send_errors += 1;
-                Err(e)
-            }
+        let success = self.forwarder.send_batch(batch).await;
+        if success {
+            self.stats.flows_sent += batch.len() as u64;
+            self.stats.batches_sent += 1;
+            self.update_avg_batch_size();
+        } else {
+            self.stats.send_errors += 1;
         }
+        success
     }
 
     fn update_avg_batch_size(&mut self) {
@@ -226,14 +256,14 @@ impl StatefulForwarder {
                     batch.push(flow);
 
                     if batch.len() >= self.forwarder.max_batch_size {
-                        let _ = self.send_batch_with_stats(&batch).await;
+                        self.send_batch_with_stats(&batch).await;
                         batch.clear();
                     }
                 }
 
                 _ = timer.tick() => {
                     if !batch.is_empty() {
-                        let _ = self.send_batch_with_stats(&batch).await;
+                        self.send_batch_with_stats(&batch).await;
                         batch.clear();
                     }
                 }
@@ -330,12 +360,15 @@ mod tests {
     #[tokio::test]
     async fn test_forwarder_creation() {
         let addr = "127.0.0.1:5000".parse().unwrap();
-        let forwarder = BatchForwarder::new(addr, 128, 100).await.unwrap();
+        let forwarder = BatchForwarder::new(addr, 128, 100, Some(500))
+            .await
+            .unwrap();
 
         // Should create forwarder with correct settings
         assert_eq!(forwarder.controller_addr, addr);
         assert_eq!(forwarder.max_batch_size, 128);
         assert_eq!(forwarder.timeout, Duration::from_millis(100));
+        assert_eq!(forwarder.connection_timeout, Duration::from_millis(500));
     }
 
     #[tokio::test]

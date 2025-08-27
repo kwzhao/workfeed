@@ -114,6 +114,13 @@ pub struct BatchingConfig {
     pub max_batch_size: usize,
     /// Timeout in milliseconds before sending partial batch
     pub timeout_ms: u64,
+    /// Connection timeout in milliseconds (default: 500ms)
+    #[serde(default = "default_connection_timeout")]
+    pub connection_timeout_ms: u64,
+}
+
+fn default_connection_timeout() -> u64 {
+    500
 }
 
 impl Default for BatchingConfig {
@@ -121,6 +128,7 @@ impl Default for BatchingConfig {
         Self {
             max_batch_size: 128,
             timeout_ms: 100,
+            connection_timeout_ms: 500,
         }
     }
 }

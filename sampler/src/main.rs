@@ -14,7 +14,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[derive(Parser, Debug)]
 #[command(name = "sampler")]
@@ -120,8 +120,13 @@ async fn main() -> Result<()> {
         })
     } else {
         // Normal mode: create forwarder and forward to controller
-        let forwarder =
-            BatchForwarder::new(controller_addr, args.batch_size, args.batch_timeout).await?;
+        let forwarder = BatchForwarder::new(
+            controller_addr,
+            config.batching.max_batch_size,
+            config.batching.timeout_ms,
+            Some(config.batching.connection_timeout_ms),
+        )
+        .await?;
         tokio::spawn(async move {
             if let Err(e) = forwarder.run(sampled_rx).await {
                 error!("Forwarder error: {}", e);

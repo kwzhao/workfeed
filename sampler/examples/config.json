@@ -17,7 +17,8 @@
     },
     "batching": {
         "max_batch_size": 128,
-        "timeout_ms": 100
+        "timeout_ms": 100,
+        "connection_timeout_ms": 500
     },
     "controller": {
         "address": "10.0.0.1:5000"
