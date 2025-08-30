@@ -271,6 +271,10 @@ int main(int argc, char **argv)
     __u64 ipv6_skipped = 0;
     __u32 ipv6_key = STAT_IPV6_SKIPPED;
     
+    /* Force line buffering for stdout/stderr to ensure logs appear when redirected */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+    
     /* Command-line options */
     static struct option long_opts[] = {
         {"debug", no_argument, 0, 'd'},
