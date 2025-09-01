@@ -152,6 +152,8 @@ sudo ./test_tcp_monitor.sh
 1. **Debug Mode** (`--debug`): Prints each flow record to stdout as connections complete
 2. **Daemon Mode** (`--daemon`): Batches flow records and sends them via UDP to a rack-level sampler
 
+**Note**: The monitor automatically filters out flows with exactly 1 byte sent, as these typically represent FIN-only control flows without application data. This reduces noise in the collected data by eliminating connection teardown artifacts.
+
 #### Daemon Mode Options
 
 - `--udp-host HOST`: Rack sampler IP address (default: 127.0.0.1)

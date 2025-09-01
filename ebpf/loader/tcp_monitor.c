@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <signal.h>
 #include <string.h>
@@ -191,6 +192,12 @@ static void add_to_batch(const struct flow_record *flow, struct tcp_monitor_bpf 
     }
 }
 
+static bool should_filter_flow(const struct flow_record *flow)
+{
+    /* Filter out 1-byte flows (typically FIN-only control flows without application data) */
+    return flow->bytes_sent == 1;
+}
+
 static int handle_flow_event(void *ctx, void *data, size_t data_sz)
 {
     const struct flow_record *flow = data;
@@ -198,6 +205,10 @@ static int handle_flow_event(void *ctx, void *data, size_t data_sz)
     
     if (data_sz < sizeof(*flow)) {
         fprintf(stderr, "Invalid flow record size\n");
+        return 0;
+    }
+    
+    if (should_filter_flow(flow)) {
         return 0;
     }
     
