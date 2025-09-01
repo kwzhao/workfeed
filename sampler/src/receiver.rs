@@ -200,8 +200,8 @@ mod tests {
 
         // Create test flow
         let flow = FlowInfo {
-            saddr: 0x0a000001,
-            daddr: 0x0a000002,
+            saddr: 0x0100000a, // 10.0.0.1 in little-endian (host) order
+            daddr: 0x0200000a, // 10.0.0.2 in little-endian (host) order
             sport: 1234,
             dport: 80,
             protocol: 6,
@@ -216,8 +216,8 @@ mod tests {
         // Build packet - simulate what tcp_monitor sends
         let mut packet = vec![0, 1]; // count = 1
         let flow_be = FlowInfo {
-            saddr: flow.saddr,      // Host order
-            daddr: flow.daddr,      // Host order
+            saddr: flow.saddr,      // Host order (little-endian)
+            daddr: flow.daddr,      // Host order (little-endian)
             sport: 1234u16.to_be(), // Network order
             dport: 80u16.to_be(),   // Network order
             protocol: flow.protocol,
@@ -242,7 +242,7 @@ mod tests {
         // Receive flows
         let flows = rx.recv().await.unwrap();
         assert_eq!(flows.len(), 1);
-        assert_eq!(flows[0].saddr, 0x0a000001);
+        assert_eq!(flows[0].saddr, 0x0a000001); // Expected in network order after conversion
         assert_eq!(flows[0].bytes_sent, 1024);
 
         // Clean up

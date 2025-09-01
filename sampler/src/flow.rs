@@ -166,14 +166,14 @@ impl FlowPacket {
             let flow = unsafe { std::ptr::read_unaligned(flow_bytes.as_ptr() as *const FlowInfo) };
 
             // Convert byte order:
-            // - IPs are in host byte order (from kernel socket struct)
+            // - IPs are in host byte order (from kernel socket struct) - need to convert to network order
             // - Ports are in network byte order (from eBPF conversion)
             // - Timestamps and bytes are in host byte order
             let flow = FlowInfo {
-                saddr: flow.saddr,               // Already in host order
-                daddr: flow.daddr,               // Already in host order
-                sport: u16::from_be(flow.sport), // Convert from network order
-                dport: u16::from_be(flow.dport), // Convert from network order
+                saddr: u32::from_le(flow.saddr).to_be(), // Convert from host (LE) to network (BE) order
+                daddr: u32::from_le(flow.daddr).to_be(), // Convert from host (LE) to network (BE) order
+                sport: u16::from_be(flow.sport),         // Convert from network order
+                dport: u16::from_be(flow.dport),         // Convert from network order
                 protocol: flow.protocol,
                 dscp: flow.dscp,
                 _pad: flow._pad,
@@ -210,10 +210,10 @@ mod tests {
         let mut data = vec![0, 2]; // count = 2
 
         let flow1 = FlowInfo {
-            saddr: 0x0a000001u32,   // 10.0.0.1 in host order
-            daddr: 0x0a000002u32,   // 10.0.0.2 in host order
-            sport: 1234u16.to_be(), // Port in network order
-            dport: 80u16.to_be(),   // Port in network order
+            saddr: 0x0100000au32.to_le(), // 10.0.0.1 in little-endian (host) order
+            daddr: 0x0200000au32.to_le(), // 10.0.0.2 in little-endian (host) order
+            sport: 1234u16.to_be(),       // Port in network order
+            dport: 80u16.to_be(),         // Port in network order
             protocol: 6,
             dscp: 10,
             _pad: 0,
@@ -234,7 +234,7 @@ mod tests {
 
         let flows = FlowPacket::parse(&data).unwrap();
         assert_eq!(flows.len(), 2);
-        assert_eq!(flows[0].saddr, 0x0a000001);
+        assert_eq!(flows[0].saddr, 0x0a000001); // Should be in network order after conversion
         assert_eq!(flows[0].bytes_sent, 1024);
     }
 }
